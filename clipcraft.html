@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Clipcraft: free text-to-video maker</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:wght@500;800&family=Figtree:wght@400;600&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#14161f;--panel:#1d2030;--line:#2f3450;--text:#eef0f8;--mute:#9aa0bd;--accent:#ff5d73;--accent2:#ffd166}
+@media (prefers-color-scheme:light){:root{--bg:#f3f1ee;--panel:#fff;--line:#d9d5ce;--text:#1b1d2a;--mute:#666b80;--accent:#e63950;--accent2:#b07a00}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:16px/1.5 Figtree,system-ui,sans-serif}
+main{max-width:1000px;margin:0 auto;padding:28px 18px 60px;display:grid;grid-template-columns:1fr 340px;gap:28px}
+@media(max-width:820px){main{grid-template-columns:1fr}}
+h1{font:800 clamp(2rem,5vw,3.2rem)/1 'Bricolage Grotesque',sans-serif;margin:0 0 8px;letter-spacing:-.02em}
+.sub{color:var(--mute);margin:0 0 22px;max-width:52ch}
+label{display:block;font-weight:600;margin:16px 0 6px}
+textarea,select,input[type=text],input[type=number]{width:100%;background:var(--panel);color:var(--text);border:1px solid var(--line);border-radius:8px;padding:10px 12px;font:inherit}
+textarea{min-height:170px;resize:vertical}
+.row{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.hint{color:var(--mute);font-size:.88rem;margin-top:4px}
+.chk{display:flex;gap:8px;align-items:center;font-weight:400;margin:14px 0 0}
+button{font:600 1rem Figtree,sans-serif;border:0;border-radius:8px;padding:12px 18px;cursor:pointer}
+.go{background:var(--accent);color:#fff;margin-top:20px;width:100%}
+.alt{background:var(--panel);color:var(--text);border:1px solid var(--line)}
+button:disabled{opacity:.5;cursor:wait}
+:focus-visible{outline:3px solid var(--accent2);outline-offset:2px}
+.stage{position:sticky;top:18px;align-self:start}
+canvas{width:100%;max-height:70vh;object-fit:contain;background:#000;border-radius:10px;border:1px solid var(--line);display:block}
+.btns{display:flex;gap:10px;margin-top:12px}.btns button{flex:1}
+#status{color:var(--mute);font-size:.9rem;margin-top:10px;min-height:1.4em}
+a{color:var(--accent2)}
+</style>
+</head>
+<body>
+<main>
+<section>
+<h1>Clipcraft</h1>
+<p class="sub">Paste a script, pick a format, and download a captioned video made entirely in your browser. No account, no upload, no cost.</p>
+
+<label for="script">Script (one caption per line)</label>
+<textarea id="script">Nobody tells you this about money.
+Pay yourself first, every single payday.
+Even $20 builds the habit.
+Habits beat motivation every time.
+Follow for one money tip a day.</textarea>
+<div class="hint">No line breaks? It splits by sentence instead. Need a script? Ask any AI chatbot for "a 30-second faceless Shorts script, one short line per caption."</div>
+
+<div class="row">
+<div><label for="fmt">Format</label>
+<select id="fmt">
+<option value="9:16">9:16 (Shorts, TikTok, Reels)</option>
+<option value="1:1">1:1 (Square feed post)</option>
+<option value="4:5">4:5 (Instagram feed)</option>
+<option value="16:9">16:9 (YouTube, landscape)</option>
+</select></div>
+<div><label for="theme">Look</label>
+<select id="theme">
+<option value="0">Sunset</option><option value="1">Midnight</option><option value="2">Mint</option><option value="3">Mono</option>
+</select></div>
+</div>
+<div class="row">
+<div><label for="speed">Seconds per word</label><input id="speed" type="number" min="0.2" max="1" step="0.05" value="0.4"></div>
+<div><label for="handle">Handle on video</label><input id="handle" type="text" placeholder="@yourname"></div>
+</div>
+
+<label for="imgs">Background images or videos (optional)</label>
+<input id="imgs" type="file" accept="image/*" multiple>
+<div class="hint">Images cycle behind the captions with a slow zoom. Make AI images free with any image generator, then add them here.</div>
+
+<label class="chk"><input id="mic" type="checkbox"> Record my voice while the video renders</label>
+<div class="hint">Read the script aloud as it plays. Your browser will ask for mic access.</div>
+
+<button class="go" id="make">Make and download video</button>
+<div id="status" role="status"></div>
+</section>
+
+<aside class="stage">
+<canvas id="cv"></canvas>
+<div class="btns"><button class="alt" id="prev">Preview</button></div>
+</aside>
+</main>
+
+<script>
+const FORMATS={'9:16':[1080,1920],'1:1':[1080,1080],'4:5':[1080,1350],'16:9':[1920,1080]};
+const THEMES=[
+ {a:'#ff5d73',b:'#ffb347',t:'#fff'},
+ {a:'#1b1f4b',b:'#6a3df0',t:'#fff'},
+ {a:'#0f766e',b:'#a7f3d0',t:'#06201d'},
+ {a:'#111',b:'#444',t:'#fff'}];
+const $=id=>document.getElementById(id), cv=$('cv'), ctx=cv.getContext('2d');
+let images=[], segs=[], total=0, running=false;
+
+function setFormat(){const [w,h]=FORMATS[$('fmt').value];cv.width=w;cv.height=h;draw(0)}
+function buildSegs(){
+  let raw=$('script').value.trim();
+  let lines=raw.split(/\n+/).map(s=>s.trim()).filter(Boolean);
+  if(lines.length<2) lines=raw.split(/(?<=[.!?])\s+/).filter(Boolean);
+  const spw=parseFloat($('speed').value)||0.4; let t=0;
+  segs=lines.map(text=>{const d=Math.max(2,text.split(/\s+/).length*spw);const s={text,start:t,dur:d};t+=d;return s});
+  total=t;
+}
+function wrap(text,maxW){
+  const words=text.split(' '),out=[];let line='';
+  for(const w of words){const test=line?line+' '+w:w;
+    if(ctx.measureText(test).width>maxW&&line){out.push(line);line=w}else line=test}
+  out.push(line);return out;
+}
+const ease=x=>1-Math.pow(1-x,3);
+function draw(time){
+  const W=cv.width,H=cv.height,th=THEMES[+$('theme').value];
+  if(!segs.length) buildSegs();
+  let i=segs.findIndex(s=>time>=s.start&&time<s.start+s.dur); if(i<0) i=0;
+  const s=segs[i]||{text:'',start:0,dur:1}, lt=time-s.start, p=Math.min(1,lt/s.dur);
+  const g=ctx.createLinearGradient(0,0,W*Math.cos(time*.3+1),H);
+  g.addColorStop(0,th.a);g.addColorStop(1,th.b);ctx.fillStyle=g;ctx.fillRect(0,0,W,H);
+  const im=images[i%Math.max(1,images.length)];
+  if(im){const z=1+.1*p,r=Math.max(W/im.width,H/im.height)*z,iw=im.width*r,ih=im.height*r;
+    ctx.drawImage(im,(W-iw)/2,(H-ih)/2,iw,ih);ctx.fillStyle='rgba(0,0,0,.45)';ctx.fillRect(0,0,W,H)}
+  const fs=Math.round(Math.min(W,H)*.085);
+  ctx.font=`800 ${fs}px "Bricolage Grotesque",Arial,sans-serif`;
+  ctx.textAlign='center';ctx.textBaseline='middle';
+  const lines=wrap(s.text,W*.82),lh=fs*1.2,a=ease(Math.min(1,lt/.35)),sc=.92+.08*a;
+  ctx.save();ctx.translate(W/2,H/2);ctx.scale(sc,sc);ctx.globalAlpha=a;
+  const y0=-(lines.length-1)*lh/2;
+  ctx.lineJoin='round';ctx.lineWidth=fs*.14;ctx.strokeStyle=im?'rgba(0,0,0,.8)':'rgba(0,0,0,.25)';
+  lines.forEach((l,k)=>{ctx.strokeText(l,0,y0+k*lh);ctx.fillStyle=im?'#fff':th.t;ctx.fillText(l,0,y0+k*lh)});
+  ctx.restore();
+  const h=$('handle').value;
+  if(h){ctx.font=`600 ${Math.round(fs*.42)}px Figtree,Arial,sans-serif`;ctx.fillStyle='rgba(255,255,255,.85)';ctx.fillText(h,W/2,H-H*.07)}
+  ctx.fillStyle='rgba(255,255,255,.85)';ctx.fillRect(0,0,W*Math.min(1,time/total),Math.max(6,H*.006));
+}
+function play(record){
+  return new Promise(async resolve=>{
+    if(running) return; running=true; buildSegs();
+    let rec,chunks=[],stream;
+    if(record){
+      stream=cv.captureStream(30);
+      if($('mic').checked){try{const m=await navigator.mediaDevices.getUserMedia({audio:true});m.getAudioTracks().forEach(t=>stream.addTrack(t))}
+        catch(e){$('status').textContent='Mic blocked, rendering without voice.'}}
+      const type=['video/mp4;codecs=avc1','video/webm;codecs=vp9,opus','video/webm'].find(t=>MediaRecorder.isTypeSupported(t))||'';
+      rec=new MediaRecorder(stream,type?{mimeType:type,videoBitsPerSecond:6e6}:{});
+      rec.ondataavailable=e=>e.data.size&&chunks.push(e.data);
+      rec.onstop=()=>{const ext=(rec.mimeType||'').includes('mp4')?'mp4':'webm';
+        const url=URL.createObjectURL(new Blob(chunks,{type:rec.mimeType||'video/webm'}));
+        const a=document.createElement('a');a.href=url;a.download='clipcraft-'+$('fmt').value.replace(':','x')+'.'+ext;a.click();
+        $('status').textContent='Done. Saved as '+ext.toUpperCase()+'. If a site wants MP4 and you got WEBM, convert it free in CapCut or cloudconvert.com.'};
+      rec.start();
+    }
+    const t0=performance.now();
+    (function tick(){const t=(performance.now()-t0)/1000;
+      if(t>=total){draw(total-.01);if(rec)rec.stop();if(stream)stream.getTracks().forEach(x=>x.stop());running=false;resolve();return}
+      draw(t);if(record)$('status').textContent=`Rendering ${Math.round(t/total*100)}%. Keep this tab open.`;
+      requestAnimationFrame(tick)})();
+  });
+}
+$('imgs').onchange=async e=>{
+  images=await Promise.all([...e.target.files].map(f=>new Promise(r=>{const i=new Image();i.onload=()=>r(i);i.src=URL.createObjectURL(f)})));
+  draw(0)};
+$('fmt').onchange=setFormat;
+['script','theme','speed','handle'].forEach(id=>$(id).addEventListener('input',()=>{buildSegs();draw(0)}));
+$('prev').onclick=()=>play(false);
+$('make').onclick=async()=>{$('make').disabled=true;await play(true);$('make').disabled=false};
+document.fonts.ready.then(setFormat);
+</script>
+</body>
+</html>
